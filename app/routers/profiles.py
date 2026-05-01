@@ -80,8 +80,8 @@ async def list_all_interests(db: UserDB) -> list[InterestOut]:
 
 
 @router.put("/me/interests", response_model=OkResponse)
-async def set_my_interests(uid: UserID, db: UserDB, interest_ids: list[UUID]) -> OkResponse:
-    await profile_svc.set_interests(uid, interest_ids, db)
+async def set_my_interests(uid: UserID, db: UserDB, interest_names: list[str]) -> OkResponse:
+    await profile_svc.set_interests_by_name(uid, interest_names, db)
     return OkResponse()
 
 
