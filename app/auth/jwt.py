@@ -13,8 +13,7 @@ from functools import lru_cache
 from typing import Any
 
 import httpx
-from jose import ExpiredSignatureError, JWTError, jwt
-from jose.backends import ECKey
+from jose import ExpiredSignatureError, JWTError, jwk, jwt
 
 from app.config import settings
 
@@ -23,7 +22,7 @@ _JWKS_URL = f"{settings.supabase_url}/auth/v1/.well-known/jwks.json"
 
 
 @lru_cache(maxsize=1)
-def _jwks_public_key() -> ECKey | None:
+def _jwks_public_key() -> Any:
     """Fetch and cache the ES256 public key from Supabase JWKS endpoint."""
     try:
         resp = httpx.get(_JWKS_URL, timeout=10)
@@ -31,7 +30,7 @@ def _jwks_public_key() -> ECKey | None:
         keys = resp.json().get("keys", [])
         ec_keys = [k for k in keys if k.get("alg") == "ES256"]
         if ec_keys:
-            return ECKey(ec_keys[0], algorithm="ES256")
+            return jwk.construct(ec_keys[0], algorithm="ES256")
         return None
     except Exception:
         return None
