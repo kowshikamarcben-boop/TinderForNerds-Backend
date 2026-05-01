@@ -22,9 +22,11 @@ def get_user_client(request: Request) -> Client:
     """
     Per-request client initialised with the caller's JWT.
     RLS policies enforce row-level access automatically.
+    Falls back to anon role when no Authorization header present.
     """
     auth_header = request.headers.get("Authorization", "")
     token = auth_header.removeprefix("Bearer ").strip()
     client = create_client(settings.supabase_url, settings.supabase_anon_key)
-    client.postgrest.auth(token)
+    if token:
+        client.postgrest.auth(token)
     return client

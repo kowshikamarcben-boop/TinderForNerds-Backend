@@ -1,7 +1,12 @@
 """
 JWT verification for Supabase-issued tokens.
 Algorithm: HS256, audience: authenticated.
+
+Supabase stores the JWT secret as base64 in the dashboard but signs tokens
+using the raw decoded bytes — so we must base64-decode before verifying.
 """
+import base64
+from functools import lru_cache
 from typing import Any
 
 from jose import ExpiredSignatureError, JWTError, jwt
@@ -10,6 +15,17 @@ from app.config import settings
 
 _ALGORITHM = "HS256"
 _AUDIENCE = "authenticated"
+
+
+@lru_cache(maxsize=1)
+def _jwt_secret_bytes() -> bytes:
+    """Decode the base64 JWT secret to raw bytes (what Supabase actually signs with)."""
+    secret = settings.supabase_jwt_secret
+    # Try base64 decode; fall back to raw utf-8 bytes if it's not valid base64
+    try:
+        return base64.b64decode(secret)
+    except Exception:
+        return secret.encode()
 
 
 def verify_jwt(token: str) -> dict[str, Any]:
@@ -21,7 +37,7 @@ def verify_jwt(token: str) -> dict[str, Any]:
     try:
         claims = jwt.decode(
             token,
-            settings.supabase_jwt_secret,
+            _jwt_secret_bytes(),
             algorithms=[_ALGORITHM],
             audience=_AUDIENCE,
             options={"verify_exp": True},

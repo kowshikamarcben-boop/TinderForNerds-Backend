@@ -21,6 +21,11 @@ from app.services import profiles as profile_svc
 router = APIRouter(tags=["profiles"])
 
 
+@router.get("/profiles/id/{profile_id}", response_model=ProfileOut)
+async def get_profile_by_id(profile_id: UUID, uid: UserID, db: UserDB) -> ProfileOut:
+    return await profile_svc.get_profile_by_id(str(profile_id), db)
+
+
 @router.get("/profiles/{username}", response_model=ProfileOut)
 async def get_profile(username: str, uid: UserID, db: UserDB) -> ProfileOut:
     return await profile_svc.get_profile_by_username(username, db)
