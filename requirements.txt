@@ -4,13 +4,13 @@ uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 
 # Supabase
-supabase==2.9.2
+supabase==2.29.0
 
 # Auth
 python-jose[cryptography]==3.3.0
 
 # Validation
-pydantic==2.7.4
+pydantic==2.9.2
 pydantic-settings==2.5.2
 
 # HTTP client
