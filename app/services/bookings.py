@@ -95,8 +95,11 @@ async def update_status(booking_id: UUID, profile_id: str, body: BookingStatusUp
     other_id = str(booking.guest_id) if role == "host" else str(booking.host_id)
     if body.status == BookingStatus.confirmed:
         await send_notification_to(other_id, "booking_confirmed", {"booking_id": str(booking_id)})
-        from app.worker import enqueue
-        await enqueue("booking_reminder", {"booking_id": str(booking_id)})
+        try:
+            from app.worker import enqueue
+            await enqueue("booking_reminder", {"booking_id": str(booking_id)})
+        except Exception:
+            pass
     elif body.status in (BookingStatus.cancelled_by_host, BookingStatus.cancelled_by_guest):
         await send_notification_to(other_id, "booking_cancelled", {"booking_id": str(booking_id)})
 
