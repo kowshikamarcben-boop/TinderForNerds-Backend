@@ -33,4 +33,4 @@ class MessageOut(BaseModel):
 
 
 class ReadReceiptIn(BaseModel):
-    message_ids: list[UUID]
+    message_ids: list[UUID] = Field(default_factory=list)  # empty = mark all in match

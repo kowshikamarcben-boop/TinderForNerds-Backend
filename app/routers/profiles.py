@@ -3,7 +3,7 @@
 """
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 
 from app.deps import UserDB, UserID
 from app.models.common import OkResponse
@@ -19,6 +19,11 @@ from app.models.profiles import (
 from app.services import profiles as profile_svc
 
 router = APIRouter(tags=["profiles"])
+
+
+@router.get("/profiles/id/{profile_id}", response_model=ProfileOut)
+async def get_profile_by_id(profile_id: UUID, uid: UserID, db: UserDB) -> ProfileOut:
+    return await profile_svc.get_profile_by_id(str(profile_id), db)
 
 
 @router.get("/profiles/{username}", response_model=ProfileOut)
@@ -75,8 +80,8 @@ async def list_all_interests(db: UserDB) -> list[InterestOut]:
 
 
 @router.put("/me/interests", response_model=OkResponse)
-async def set_my_interests(uid: UserID, db: UserDB, interest_ids: list[UUID]) -> OkResponse:
-    await profile_svc.set_interests(uid, interest_ids, db)
+async def set_my_interests(uid: UserID, db: UserDB, interest_names: list[str] = Body(...)) -> OkResponse:
+    await profile_svc.set_interests_by_name(uid, interest_names, db)
     return OkResponse()
 
 

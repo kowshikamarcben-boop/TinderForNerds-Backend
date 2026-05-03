@@ -87,5 +87,7 @@ async def delete_message(message_id: UUID, deleter_id: str, db: Client) -> None:
 async def mark_read(match_id: UUID, profile_id: str, body: ReadReceiptIn, db: Client) -> None:
     await _assert_participant(str(match_id), profile_id, db)
     ids = [str(mid) for mid in body.message_ids]
+    q = db.table("messages").update({"is_read": True}).eq("match_id", str(match_id)).neq("sender_id", profile_id)
     if ids:
-        db.table("messages").update({"is_read": True}).in_("id", ids).neq("sender_id", profile_id).execute()
+        q = q.in_("id", ids)
+    q.execute()

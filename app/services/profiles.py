@@ -30,16 +30,31 @@ def _require(result: list, detail_code: str, msg: str) -> dict:  # type: ignore[
     return result[0]  # type: ignore[return-value]
 
 
+def _attach_interests(row: dict, db: Client) -> dict:  # type: ignore[type-arg]
+    """Join profile_interests → interests and attach name list to the row."""
+    try:
+        pi = db.table("profile_interests").select("interest_id").eq("profile_id", row["id"]).execute()
+        if pi.data:
+            ids = [r["interest_id"] for r in pi.data]
+            i_res = db.table("interests").select("name").in_("id", ids).execute()
+            row["interests"] = [r["name"] for r in i_res.data]
+        else:
+            row["interests"] = []
+    except Exception:
+        row["interests"] = []
+    return row
+
+
 async def get_profile_by_id(profile_id: str, db: Client) -> ProfileOut:
     result = db.table("profiles").select("*").eq("id", profile_id).execute()
     row = _require(result.data, "profile_not_found", "Profile not found")
-    return ProfileOut(**row)
+    return ProfileOut(**_attach_interests(row, db))
 
 
 async def get_profile_by_username(username: str, db: Client) -> ProfileOut:
     result = db.table("profiles").select("*").eq("username", username).execute()
     row = _require(result.data, "profile_not_found", f"No profile with username '{username}'")
-    return ProfileOut(**row)
+    return ProfileOut(**_attach_interests(row, db))
 
 
 async def update_profile(profile_id: str, body: ProfileUpdate, db: Client) -> ProfileOut:
@@ -59,11 +74,14 @@ async def update_profile(profile_id: str, body: ProfileUpdate, db: Client) -> Pr
             detail={"code": "profile_not_found", "message": "Profile not found"},
         )
 
-    # Enqueue re-embedding if relevant fields changed
+    # Enqueue re-embedding if relevant fields changed (best-effort; skips if Redis unavailable)
     embed_fields = {"bio", "headline", "looking_for"}
     if embed_fields & set(dirty.keys()):
-        from app.worker import enqueue
-        await enqueue("embed_profile", {"profile_id": profile_id})
+        try:
+            from app.worker import enqueue
+            await enqueue("embed_profile", {"profile_id": profile_id})
+        except Exception:
+            pass
 
     return ProfileOut(**result.data[0])
 
@@ -131,9 +149,12 @@ async def add_link(profile_id: str, body: ProfileLinkIn, db: Client) -> ProfileL
     result = db.table("profile_links").insert(row).execute()
     # Enqueue verification for GitHub/LinkedIn links
     link_out = ProfileLinkOut(**result.data[0])
-    if body.platform.lower() in ("github", "linkedin"):
-        from app.worker import enqueue
-        await enqueue("verify_github_link", {"link_id": str(link_out.id), "platform": body.platform})
+    if str(body.kind).lower() in ("github", "linkedin"):
+        try:
+            from app.worker import enqueue
+            await enqueue("verify_github_link", {"link_id": str(link_out.id), "platform": str(body.kind)})
+        except Exception:
+            pass
     return link_out
 
 
@@ -154,9 +175,21 @@ async def set_interests(profile_id: str, interest_ids: list[UUID], db: Client) -
     if interest_ids:
         rows = [{"profile_id": profile_id, "interest_id": str(iid)} for iid in interest_ids]
         db.table("profile_interests").insert(rows).execute()
-    # Re-embed after interest change
-    from app.worker import enqueue
-    await enqueue("embed_profile", {"profile_id": profile_id})
+    try:
+        from app.worker import enqueue
+        await enqueue("embed_profile", {"profile_id": profile_id})
+    except Exception:
+        pass
+
+
+async def set_interests_by_name(profile_id: str, names: list[str], db: Client) -> None:
+    """Accept interest names (not UUIDs) — looks up IDs internally."""
+    if names:
+        name_res = db.table("interests").select("id").in_("name", names).execute()
+        ids = [UUID(r["id"]) for r in name_res.data]
+    else:
+        ids = []
+    await set_interests(profile_id, ids, db)
 
 
 # ── Badges ────────────────────────────────────────────────────
