@@ -2,7 +2,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.db.types import BookingKind, BookingStatus, PaymentStatus
 
@@ -12,10 +12,23 @@ class BookingIn(BaseModel):
     starts_at: datetime
     ends_at: datetime
     kind: BookingKind = BookingKind.coffee
-    notes: str | None = None
+    notes: str | None = Field(None, max_length=5000)
     is_paid: bool = False
     price_cents: int | None = None
     currency: str = "INR"
+
+    @model_validator(mode="after")
+    def ends_after_starts(self) -> "BookingIn":
+        if self.ends_at <= self.starts_at:
+            raise ValueError("ends_at must be after starts_at")
+        return self
+
+    @model_validator(mode="after")
+    def currency_whitelist(self) -> "BookingIn":
+        _ALLOWED = {"INR", "USD", "EUR", "GBP", "CAD", "AUD", "SGD", "AED"}
+        if self.currency not in _ALLOWED:
+            raise ValueError(f"currency must be one of {sorted(_ALLOWED)}")
+        return self
 
 
 class BookingStatusUpdate(BaseModel):

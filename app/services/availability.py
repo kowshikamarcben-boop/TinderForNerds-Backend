@@ -73,8 +73,14 @@ async def expand_slots(profile_id: UUID, db: Client) -> list[dict]:  # type: ign
                         "starts_at": occ.isoformat(),
                         "ends_at": (occ + duration).isoformat(),
                     })
-            except Exception:
-                pass
+            except Exception as exc:
+                import structlog
+                structlog.get_logger().warning(
+                    "availability.rrule_parse_failed",
+                    slot_id=slot.get("id"),
+                    rrule=slot.get("rrule"),
+                    error=str(exc),
+                )
         elif now <= starts_at <= horizon:
             windows.append({
                 "starts_at": slot["starts_at"],

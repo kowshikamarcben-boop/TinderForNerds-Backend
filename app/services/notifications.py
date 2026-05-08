@@ -7,21 +7,26 @@ from app.db.client import get_admin_client
 
 
 async def send_notification_to(profile_id: str, notif_type: str, payload: dict) -> None:  # type: ignore[type-arg]
+    import structlog
+    log = structlog.get_logger()
     admin = get_admin_client()
     row = {
         "profile_id": profile_id,
-        "type": notif_type,
+        "kind": notif_type,
         "payload": payload,
         "is_read": False,
     }
-    admin.table("notifications").insert(row).execute()
+    try:
+        admin.table("notifications").insert(row).execute()
+    except Exception as exc:
+        log.warning("notifications.insert_failed", profile_id=profile_id, kind=notif_type, error=str(exc))
 
 
-async def list_notifications(profile_id: str, db: Client, *, unread_only: bool) -> list[dict]:  # type: ignore[type-arg]
+async def list_notifications(profile_id: str, db: Client, *, unread_only: bool, offset: int = 0, limit: int = 50) -> list[dict]:  # type: ignore[type-arg]
     q = db.table("notifications").select("*").eq("profile_id", profile_id).order("created_at", desc=True)
     if unread_only:
         q = q.eq("is_read", False)
-    result = q.limit(50).execute()
+    result = q.range(offset, offset + limit - 1).execute()
     return result.data  # type: ignore[return-value]
 
 

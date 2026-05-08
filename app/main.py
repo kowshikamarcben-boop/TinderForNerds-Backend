@@ -90,10 +90,21 @@ def create_app() -> FastAPI:
     # ── Global error handler ──────────────────────────────
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-        log.error("unhandled_exception", exc=str(exc), path=request.url.path)
+        import traceback
+        request_id = getattr(request.state, "request_id", None)
+        log.error(
+            "unhandled_exception",
+            exc=str(exc),
+            exc_type=type(exc).__name__,
+            path=request.url.path,
+            method=request.method,
+            request_id=request_id,
+            traceback=traceback.format_exc(),
+        )
         return JSONResponse(
             status_code=500,
-            content={"code": "internal_error", "message": "An unexpected error occurred"},
+            headers={"X-Request-ID": request_id} if request_id else {},
+            content={"code": "internal_error", "message": "An unexpected error occurred", "request_id": request_id},
         )
 
     # ── Routers ───────────────────────────────────────────

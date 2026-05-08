@@ -1,6 +1,5 @@
 """Profile service — get, update, avatar, projects, links, interests, badges."""
 import asyncio
-import hashlib
 import uuid
 from uuid import UUID
 
@@ -31,15 +30,10 @@ def _require(result: list, detail_code: str, msg: str) -> dict:  # type: ignore[
 
 
 def _attach_interests(row: dict, db: Client) -> dict:  # type: ignore[type-arg]
-    """Join profile_interests → interests and attach name list to the row."""
+    """Attach interest names using a single nested JOIN (eliminates N+1)."""
     try:
-        pi = db.table("profile_interests").select("interest_id").eq("profile_id", row["id"]).execute()
-        if pi.data:
-            ids = [r["interest_id"] for r in pi.data]
-            i_res = db.table("interests").select("name").in_("id", ids).execute()
-            row["interests"] = [r["name"] for r in i_res.data]
-        else:
-            row["interests"] = []
+        pi = db.table("profile_interests").select("interests(name)").eq("profile_id", row["id"]).execute()
+        row["interests"] = [r["interests"]["name"] for r in pi.data if r.get("interests")]
     except Exception:
         row["interests"] = []
     return row
@@ -48,6 +42,26 @@ def _attach_interests(row: dict, db: Client) -> dict:  # type: ignore[type-arg]
 async def get_profile_by_id(profile_id: str, db: Client) -> ProfileOut:
     result = db.table("profiles").select("*").eq("id", profile_id).execute()
     row = _require(result.data, "profile_not_found", "Profile not found")
+    return ProfileOut(**_attach_interests(row, db))
+
+
+async def get_profile_by_id_with_visibility(profile_id: str, requester_id: str, db: Client) -> ProfileOut:
+    """Get profile by UUID with visibility enforcement — prevents IDOR on private profiles."""
+    result = db.table("profiles").select("*").eq("id", profile_id).execute()
+    row = _require(result.data, "profile_not_found", "Profile not found")
+    # Private profiles are only visible to the owner or mutual matches
+    if row.get("visibility") == "private" and row["id"] != requester_id:
+        admin = get_admin_client()
+        match_res = admin.table("matches").select("id").or_(
+            f"user_a_id.eq.{requester_id},user_b_id.eq.{requester_id}"
+        ).or_(
+            f"user_a_id.eq.{profile_id},user_b_id.eq.{profile_id}"
+        ).eq("status", "active").execute()
+        if not match_res.data:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "profile_private", "message": "This profile is private"},
+            )
     return ProfileOut(**_attach_interests(row, db))
 
 
@@ -86,16 +100,34 @@ async def update_profile(profile_id: str, body: ProfileUpdate, db: Client) -> Pr
     return ProfileOut(**result.data[0])
 
 
+_MAX_AVATAR_BYTES = 5 * 1024 * 1024  # 5 MB
+_MAGIC_BYTES = {
+    b"\xff\xd8\xff": "jpg",
+    b"\x89PNG": "png",
+    b"RIFF": "webp",
+}
+
+
 async def upload_avatar(profile_id: str, file: UploadFile, db: Client) -> AvatarUploadResponse:
     admin = get_admin_client()
     content = await file.read()
-    ext = (file.filename or "avatar").rsplit(".", 1)[-1].lower()
-    allowed = {"jpg", "jpeg", "png", "webp"}
-    if ext not in allowed:
+    if len(content) > _MAX_AVATAR_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={"code": "file_too_large", "message": "Avatar must be under 5 MB"},
+        )
+    # Validate by magic bytes, not just extension
+    detected = None
+    for magic, fmt in _MAGIC_BYTES.items():
+        if content[:len(magic)] == magic:
+            detected = fmt
+            break
+    if detected is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"code": "invalid_file_type", "message": f"Allowed: {allowed}"},
+            detail={"code": "invalid_file_type", "message": "Allowed formats: jpg, png, webp"},
         )
+    ext = "jpeg" if detected == "jpg" else detected
     path = f"avatars/{profile_id}/{uuid.uuid4()}.{ext}"
     await asyncio.to_thread(
         admin.storage.from_("avatars").upload,
@@ -145,16 +177,22 @@ async def list_links(profile_id: UUID, db: Client) -> list[ProfileLinkOut]:
 
 
 async def add_link(profile_id: str, body: ProfileLinkIn, db: Client) -> ProfileLinkOut:
-    row = {**body.model_dump(), "profile_id": profile_id}
-    result = db.table("profile_links").insert(row).execute()
-    # Enqueue verification for GitHub/LinkedIn links
+    import structlog
+    log = structlog.get_logger()
+    row = {**body.model_dump(mode="json"), "profile_id": profile_id}
+    # Upsert by (profile_id, kind) to avoid duplicate constraint errors
+    result = (
+        db.table("profile_links")
+        .upsert(row, on_conflict="profile_id,kind")
+        .execute()
+    )
     link_out = ProfileLinkOut(**result.data[0])
     if str(body.kind).lower() in ("github", "linkedin"):
         try:
             from app.worker import enqueue
             await enqueue("verify_github_link", {"link_id": str(link_out.id), "platform": str(body.kind)})
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("profiles.enqueue_verify_failed", link_id=str(link_out.id), error=str(exc))
     return link_out
 
 
@@ -165,7 +203,7 @@ async def delete_link(profile_id: str, link_id: UUID, db: Client) -> None:
 # ── Interests ────────────────────────────────────────────────
 
 async def list_interests(db: Client) -> list[InterestOut]:
-    result = db.table("interests").select("*").order("name").execute()
+    result = db.table("interests").select("*").order("name").limit(500).execute()
     return [InterestOut(**r) for r in result.data]
 
 
@@ -183,9 +221,16 @@ async def set_interests(profile_id: str, interest_ids: list[UUID], db: Client) -
 
 
 async def set_interests_by_name(profile_id: str, names: list[str], db: Client) -> None:
-    """Accept interest names (not UUIDs) — looks up IDs internally."""
+    """Accept interest names (not UUIDs) — looks up IDs internally. Raises if any name unknown."""
     if names:
-        name_res = db.table("interests").select("id").in_("name", names).execute()
+        name_res = db.table("interests").select("id,name").in_("name", names).execute()
+        found = {r["name"] for r in name_res.data}
+        unknown = set(names) - found
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"code": "unknown_interests", "message": f"Unknown interests: {sorted(unknown)}"},
+            )
         ids = [UUID(r["id"]) for r in name_res.data]
     else:
         ids = []
@@ -197,3 +242,52 @@ async def set_interests_by_name(profile_id: str, names: list[str], db: Client) -
 async def list_badges(profile_id: UUID, db: Client) -> list[BadgeOut]:
     result = db.table("verification_badges").select("*").eq("profile_id", str(profile_id)).execute()
     return [BadgeOut(**r) for r in result.data]
+
+
+# ── GDPR ──────────────────────────────────────────────────────
+
+async def export_profile(profile_id: str) -> dict:  # type: ignore[type-arg]
+    """Return all personal data for a user — GDPR Art. 20 data portability."""
+    admin = get_admin_client()
+    profile = admin.table("profiles").select("*").eq("id", profile_id).execute().data
+    links = admin.table("profile_links").select("*").eq("profile_id", profile_id).execute().data
+    projects = admin.table("projects").select("*").eq("profile_id", profile_id).execute().data
+    interests_join = admin.table("profile_interests").select("interest_id").eq("profile_id", profile_id).execute().data
+    interest_ids = [r["interest_id"] for r in interests_join]
+    interests = (
+        admin.table("interests").select("name").in_("id", interest_ids).execute().data
+        if interest_ids else []
+    )
+    messages = admin.table("messages").select("*").eq("sender_id", profile_id).execute().data
+    bookings = (
+        admin.table("bookings")
+        .select("*")
+        .or_(f"host_id.eq.{profile_id},guest_id.eq.{profile_id}")
+        .execute().data
+    )
+    return {
+        "profile": profile[0] if profile else {},
+        "links": links,
+        "projects": projects,
+        "interests": [i["name"] for i in interests],
+        "messages": messages,
+        "bookings": bookings,
+    }
+
+
+async def delete_account(profile_id: str) -> None:
+    """Hard-delete all user data and revoke Supabase Auth account — GDPR Art. 17."""
+    import structlog
+    log = structlog.get_logger()
+    admin = get_admin_client()
+    # Cascading deletes handle most tables via FK constraints.
+    # Delete profile row first, then auth user.
+    admin.table("profiles").delete().eq("id", profile_id).execute()
+    try:
+        admin.auth.admin.delete_user(profile_id)
+    except Exception as exc:
+        log.error("delete_account.auth_delete_failed", profile_id=profile_id, error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": "delete_failed", "message": "Account deletion failed — contact support"},
+        ) from exc

@@ -35,9 +35,9 @@ async def verify_github_link(ctx: dict, payload: dict) -> None:  # type: ignore[
             verified = False
 
     if verified:
-        from datetime import datetime, timezone
         admin.table("profile_links").update({
             "is_verified": True,
-            "verified_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", link_id).execute()
         log.info("verify_github_link.verified", link_id=link_id, platform=platform)
+    else:
+        log.info("verify_github_link.not_verified", link_id=link_id, platform=platform)

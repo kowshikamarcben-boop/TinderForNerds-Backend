@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -14,6 +14,14 @@ class Settings(BaseSettings):
     # OpenAI / OpenRouter
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     openai_base_url: str = Field(default="https://openrouter.ai/api/v1", alias="OPENAI_BASE_URL")
+
+    @field_validator("openai_api_key", mode="after")
+    @classmethod
+    def openai_key_required_in_prod(cls, v: str) -> str:
+        import os
+        if os.getenv("APP_ENV") == "production" and not v:
+            raise ValueError("OPENAI_API_KEY must be set in production")
+        return v
 
     # Redis
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
@@ -39,7 +47,7 @@ class Settings(BaseSettings):
     ranker_mmr_lambda: float = 0.70
 
     # Discovery
-    discovery_candidate_limit: int = 200
+    discovery_candidate_limit: int = 60  # fetch 3× feed_size; 200 was over-fetching
     discovery_feed_size: int = 20
 
     # Rate limits (per minute unless noted)

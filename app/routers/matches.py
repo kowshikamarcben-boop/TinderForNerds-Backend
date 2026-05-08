@@ -13,8 +13,8 @@ router = APIRouter(tags=["matches"])
 
 
 @router.get("/matches", response_model=list[MatchOut])
-async def list_matches(uid: UserID, db: UserDB) -> list[MatchOut]:
-    return await match_svc.list_matches(uid, db)
+async def list_matches(uid: UserID, db: UserDB, offset: int = 0, limit: int = 50) -> list[MatchOut]:
+    return await match_svc.list_matches(uid, db, offset=offset, limit=limit)
 
 
 @router.get("/matches/{match_id}", response_model=MatchOut)

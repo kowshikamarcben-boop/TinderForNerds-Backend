@@ -4,9 +4,18 @@ from uuid import UUID
 from fastapi import HTTPException
 from supabase import Client
 
-from app.db.types import EventApprovalStatus, ReportStatus
+from app.db.client import get_admin_client
+from app.db.types import EventApprovalStatus
 from app.models.admin import ReportOut, ReportUpdateIn, SuspendProfileIn
 from app.models.events import EventOut, EventReviewIn
+
+
+async def _verify_admin(admin_id: str) -> None:
+    """Defense-in-depth: re-check caller is admin inside the service layer."""
+    adm = get_admin_client()
+    res = adm.auth.admin.get_user_by_id(admin_id)
+    if res.user is None or res.user.app_metadata.get("role") != "admin":
+        raise HTTPException(403, detail={"code": "forbidden", "message": "Admin access required"})
 
 
 async def _audit(admin_id: str, action: str, target_type: str, target_id: str, db: Client) -> None:
@@ -20,6 +29,7 @@ async def _audit(admin_id: str, action: str, target_type: str, target_id: str, d
 
 
 async def review_event(event_id: UUID, admin_id: str, body: EventReviewIn, db: Client) -> EventOut:
+    await _verify_admin(admin_id)
     new_status = EventApprovalStatus.approved if body.approve else EventApprovalStatus.rejected
     update = {"approval_status": new_status.value, "reviewed_by": admin_id}
     if body.review_notes:
@@ -31,15 +41,16 @@ async def review_event(event_id: UUID, admin_id: str, body: EventReviewIn, db: C
     return EventOut(**result.data[0])
 
 
-async def list_reports(db: Client, *, status: str | None) -> list[ReportOut]:
+async def list_reports(db: Client, *, status: str | None, offset: int = 0, limit: int = 50) -> list[ReportOut]:
     q = db.table("reports").select("*").order("created_at", desc=True)
     if status:
         q = q.eq("status", status)
-    result = q.execute()
+    result = q.range(offset, offset + limit - 1).execute()
     return [ReportOut(**r) for r in result.data]
 
 
 async def update_report(report_id: UUID, admin_id: str, body: ReportUpdateIn, db: Client) -> ReportOut:
+    await _verify_admin(admin_id)
     update: dict = {"status": body.status.value}  # type: ignore[type-arg]
     if body.resolution_notes:
         update["resolution_notes"] = body.resolution_notes
@@ -51,6 +62,7 @@ async def update_report(report_id: UUID, admin_id: str, body: ReportUpdateIn, db
 
 
 async def suspend_profile(profile_id: UUID, admin_id: str, body: SuspendProfileIn, db: Client) -> None:
+    await _verify_admin(admin_id)
     result = db.table("profiles").update({"is_active": False}).eq("id", str(profile_id)).execute()
     if not result.data:
         raise HTTPException(404, detail={"code": "profile_not_found", "message": "Profile not found"})

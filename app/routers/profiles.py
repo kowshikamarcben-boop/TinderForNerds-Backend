@@ -23,7 +23,7 @@ router = APIRouter(tags=["profiles"])
 
 @router.get("/profiles/id/{profile_id}", response_model=ProfileOut)
 async def get_profile_by_id(profile_id: UUID, uid: UserID, db: UserDB) -> ProfileOut:
-    return await profile_svc.get_profile_by_id(str(profile_id), db)
+    return await profile_svc.get_profile_by_id_with_visibility(str(profile_id), uid, db)
 
 
 @router.get("/profiles/{username}", response_model=ProfileOut)

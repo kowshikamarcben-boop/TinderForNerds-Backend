@@ -5,10 +5,11 @@ from uuid import UUID
 
 from fastapi import APIRouter
 
-from app.deps import UserDB, UserID
+from app.deps import Redis, UserDB, UserID
 from app.models.common import OkResponse
 from app.models.messages import MessageEdit, MessageIn, MessageOut, ReadReceiptIn
 from app.services import messages as msg_svc
+from app.services.rate_limit import check_rate_limit
 
 router = APIRouter(tags=["messages"])
 
@@ -25,7 +26,9 @@ async def list_messages(
 
 
 @router.post("/matches/{match_id}/messages", response_model=MessageOut, status_code=201)
-async def send_message(match_id: UUID, uid: UserID, db: UserDB, body: MessageIn) -> MessageOut:
+async def send_message(match_id: UUID, uid: UserID, db: UserDB, redis: Redis, body: MessageIn) -> MessageOut:
+    if redis is not None:
+        await check_rate_limit(redis, f"msg:{uid}", limit=120, window=60)
     return await msg_svc.send_message(match_id, uid, body, db)
 
 

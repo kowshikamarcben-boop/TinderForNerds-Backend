@@ -54,6 +54,24 @@ async def create_booking(guest_id: str, body: BookingIn, db: Client) -> BookingO
     host_id = str(body.host_id)
     if guest_id == host_id:
         raise HTTPException(400, detail={"code": "self_booking", "message": "Cannot book yourself"})
+
+    # Overlap check — reject if host has a confirmed booking in the same window
+    admin = get_admin_client()
+    overlap = (
+        admin.table("bookings")
+        .select("id")
+        .eq("host_id", host_id)
+        .eq("status", BookingStatus.confirmed.value)
+        .lt("starts_at", body.ends_at.isoformat())
+        .gt("ends_at", body.starts_at.isoformat())
+        .execute()
+    )
+    if overlap.data:
+        raise HTTPException(
+            409,
+            detail={"code": "slot_taken", "message": "Host already has a confirmed booking in this time window"},
+        )
+
     row = {
         "guest_id": guest_id,
         "host_id": host_id,
@@ -88,8 +106,20 @@ async def update_status(booking_id: UUID, profile_id: str, body: BookingStatusUp
     if body.status == BookingStatus.confirmed:
         update["meeting_url"] = _gen_meet_url(str(booking_id))
 
+    # Atomic CAS: only update if status hasn't changed since we read it
     admin = get_admin_client()
-    result = admin.table("bookings").update(update).eq("id", str(booking_id)).execute()
+    result = (
+        admin.table("bookings")
+        .update(update)
+        .eq("id", str(booking_id))
+        .eq("status", booking.status.value)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(
+            409,
+            detail={"code": "status_conflict", "message": "Booking status changed concurrently — please refresh"},
+        )
     updated = BookingOut(**result.data[0])
 
     other_id = str(booking.guest_id) if role == "host" else str(booking.host_id)

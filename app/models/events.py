@@ -2,7 +2,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
 
 from app.db.types import (
     EventApprovalStatus,
@@ -12,25 +12,39 @@ from app.db.types import (
     EventMode,
 )
 
+_ALLOWED_CURRENCIES = {"INR", "USD", "EUR", "GBP", "CAD", "AUD", "SGD", "AED"}
+
 
 class EventIn(BaseModel):
     title: str = Field(..., min_length=3, max_length=160)
-    description: str | None = None
+    description: str | None = Field(None, max_length=5000)
     host_type: EventHostType = EventHostType.user
     kind: EventKind = EventKind.meetup
     mode: EventMode = EventMode.offline
     venue_name: str | None = None
     venue_address: str | None = None
     city: str | None = None
-    meeting_url: str | None = None
+    meeting_url: AnyHttpUrl | None = None
     starts_at: datetime
     ends_at: datetime
-    capacity: int | None = None
+    capacity: int | None = Field(None, gt=0)
     cover_url: str | None = None
     tags: list[str] = Field(default_factory=list)
     is_paid: bool = False
     price_cents: int | None = None
     currency: str = "INR"
+
+    @model_validator(mode="after")
+    def ends_after_starts(self) -> "EventIn":
+        if self.ends_at <= self.starts_at:
+            raise ValueError("ends_at must be after starts_at")
+        return self
+
+    @model_validator(mode="after")
+    def currency_whitelist(self) -> "EventIn":
+        if self.currency not in _ALLOWED_CURRENCIES:
+            raise ValueError(f"currency must be one of {sorted(_ALLOWED_CURRENCIES)}")
+        return self
 
 
 class EventUpdate(EventIn):

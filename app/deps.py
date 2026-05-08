@@ -5,6 +5,7 @@ All handlers should pull from here; never import from app.worker.
 from typing import Annotated
 
 import redis.asyncio as aioredis
+import structlog
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -13,6 +14,7 @@ from app.config import settings
 from app.db.client import get_admin_client, get_user_client
 from supabase import Client
 
+log = structlog.get_logger()
 _bearer = HTTPBearer(auto_error=False)
 
 
@@ -31,6 +33,7 @@ def current_user_id(token: Annotated[str, Depends(_get_token)]) -> str:
     try:
         return extract_user_id(token)
     except ValueError as exc:
+        log.warning("auth.token_invalid", reason=str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": str(exc), "message": "Invalid or expired token"},
@@ -41,11 +44,13 @@ def require_admin(token: Annotated[str, Depends(_get_token)]) -> str:
     try:
         uid = extract_user_id(token)
     except ValueError as exc:
+        log.warning("auth.token_invalid", reason=str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": str(exc), "message": "Invalid or expired token"},
         ) from exc
     if not is_admin_token(token):
+        log.warning("auth.admin_denied", uid=uid)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "not_admin", "message": "Admin role required"},
@@ -81,7 +86,8 @@ async def get_redis() -> aioredis.Redis | None:  # type: ignore[type-arg]
         await pool.ping()
         _redis_pool = pool
         return _redis_pool
-    except Exception:
+    except Exception as exc:
+        log.warning("redis.unavailable", error=str(exc))
         _redis_unavailable = True
         return None
 

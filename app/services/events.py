@@ -84,8 +84,11 @@ async def rsvp(event_id: UUID, profile_id: str, db: Client) -> AttendeeOut:
     }
     try:
         result = db.table("event_attendees").insert(row).execute()
-    except Exception:
-        raise HTTPException(409, detail={"code": "already_rsvped", "message": "Already RSVP'd"})
+    except Exception as exc:
+        err_str = str(exc).lower()
+        if "unique" in err_str or "duplicate" in err_str or "conflict" in err_str:
+            raise HTTPException(409, detail={"code": "already_rsvped", "message": "Already RSVP'd"})
+        raise HTTPException(500, detail={"code": "rsvp_failed", "message": "RSVP failed — please try again"}) from exc
     return AttendeeOut(**result.data[0])
 
 

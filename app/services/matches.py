@@ -8,13 +8,14 @@ from app.db.types import MatchStatus
 from app.models.matches import MatchOut, MatchStatusUpdate
 
 
-async def list_matches(profile_id: str, db: Client) -> list[MatchOut]:
+async def list_matches(profile_id: str, db: Client, *, offset: int = 0, limit: int = 50) -> list[MatchOut]:
     result = (
         db.table("matches")
         .select("*")
         .or_(f"user_a_id.eq.{profile_id},user_b_id.eq.{profile_id}")
         .neq("status", MatchStatus.archived)
         .order("last_message_at", desc=True, nullsfirst=False)
+        .range(offset, offset + limit - 1)
         .execute()
     )
     return [MatchOut(**r) for r in result.data]

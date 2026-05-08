@@ -5,7 +5,7 @@ Newer Supabase projects use ES256 (ECDSA P-256) and publish multiple keys
 via JWKS at /auth/v1/.well-known/jwks.json, each with a `kid`.  We look up
 the matching key by `kid` from the token header.  Older projects used HS256.
 """
-from functools import lru_cache
+import time
 from typing import Any
 
 import httpx
@@ -15,11 +15,18 @@ from app.config import settings
 
 _AUDIENCE = "authenticated"
 _JWKS_URL = f"{settings.supabase_url}/auth/v1/.well-known/jwks.json"
+_JWKS_TTL = 3600  # 1 hour
+
+_jwks_cache: dict[str, Any] = {}
+_jwks_fetched_at: float = 0.0
 
 
-@lru_cache(maxsize=1)
-def _jwks_keys() -> dict[str, Any]:
-    """Fetch and cache all ES256 public keys indexed by kid."""
+def _jwks_keys(force_refresh: bool = False) -> dict[str, Any]:
+    """Fetch and cache ES256 public keys indexed by kid. Refreshes every hour."""
+    global _jwks_cache, _jwks_fetched_at
+    now = time.monotonic()
+    if not force_refresh and _jwks_cache and (now - _jwks_fetched_at) < _JWKS_TTL:
+        return _jwks_cache
     try:
         resp = httpx.get(_JWKS_URL, timeout=10)
         resp.raise_for_status()
@@ -30,15 +37,21 @@ def _jwks_keys() -> dict[str, Any]:
                     result[k["kid"]] = jwk.construct(k, algorithm="ES256")
                 except Exception:
                     pass
+        _jwks_cache = result
+        _jwks_fetched_at = now
         return result
     except Exception:
-        return {}
+        return _jwks_cache  # return stale on failure rather than empty
 
 
-@lru_cache(maxsize=1)
+_hs256_secret_cache: bytes | None = None
+
+
 def _hs256_secret() -> bytes:
-    """Raw JWT secret bytes for HS256 verification."""
-    return settings.supabase_jwt_secret.encode()
+    global _hs256_secret_cache
+    if _hs256_secret_cache is None:
+        _hs256_secret_cache = settings.supabase_jwt_secret.encode()
+    return _hs256_secret_cache
 
 
 def verify_jwt(token: str) -> dict[str, Any]:
@@ -55,10 +68,13 @@ def verify_jwt(token: str) -> dict[str, Any]:
 
     try:
         if alg == "ES256":
-            kids = _jwks_keys()
             kid = header.get("kid")
-            # Pick key by kid; fall back to first available
+            kids = _jwks_keys()
             key = kids.get(kid) if kid else None
+            # If kid not found, refresh cache once (handles key rotation)
+            if key is None and kid:
+                kids = _jwks_keys(force_refresh=True)
+                key = kids.get(kid)
             if key is None:
                 key = next(iter(kids.values()), None)
             if key is None:

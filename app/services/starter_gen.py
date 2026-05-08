@@ -12,7 +12,6 @@ from uuid import UUID
 import redis.asyncio as aioredis
 from fastapi import HTTPException, status
 from openai import AsyncOpenAI
-from supabase import Client
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import settings
@@ -23,6 +22,14 @@ _client = AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_
 _CACHE_TTL = 86_400  # 24h
 
 _BLOCKLIST = {"hate", "violence", "porn", "nude", "kill"}
+
+_MAX_PROMPT_FIELD = 400  # chars per user-supplied field in prompts
+
+
+def _sanitize(text: str) -> str:
+    """Strip non-printable chars and truncate to prevent prompt injection."""
+    cleaned = "".join(c for c in text if c.isprintable() or c in "\n\r\t")
+    return cleaned[:_MAX_PROMPT_FIELD]
 
 _TEMPLATES = {
     "collaboration": "I saw your project work — would love to explore building something together!",
@@ -48,8 +55,8 @@ def _fallback(intents: list[str]) -> str:
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=4))
 async def _call_gpt(me: dict, other: dict, intents: list[str]) -> dict:  # type: ignore[type-arg]
     prompt = (
-        f"My profile: {json.dumps({'headline': me.get('headline'), 'bio': me.get('bio'), 'looking_for': me.get('looking_for')})}\n"
-        f"Their profile: {json.dumps({'headline': other.get('headline'), 'bio': other.get('bio'), 'looking_for': other.get('looking_for')})}\n"
+        f"My profile: {json.dumps({'headline': _sanitize(me.get('headline') or ''), 'bio': _sanitize(me.get('bio') or ''), 'looking_for': me.get('looking_for')})}\n"
+        f"Their profile: {json.dumps({'headline': _sanitize(other.get('headline') or ''), 'bio': _sanitize(other.get('bio') or ''), 'looking_for': other.get('looking_for')})}\n"
         f"Shared intents: {intents}\n"
         "Write a warm, personalised opening message I could send. "
         "Return JSON: {\"starter\": \"...\", \"tags\": [\"...\"]}"
@@ -73,7 +80,7 @@ async def _call_gpt(me: dict, other: dict, intents: list[str]) -> dict:  # type:
     return json.loads(resp.choices[0].message.content or "{}")
 
 
-async def get_starter(match_id: UUID, profile_id: str, db: Client, redis: aioredis.Redis | None) -> StarterResponse:  # type: ignore[type-arg]
+async def get_starter(match_id: UUID, profile_id: str, redis: aioredis.Redis | None) -> StarterResponse:  # type: ignore[type-arg]
     cache_key = f"starter:{match_id}"
 
     # Cache check (skip if Redis unavailable)
@@ -91,7 +98,7 @@ async def get_starter(match_id: UUID, profile_id: str, db: Client, redis: aiored
         raise HTTPException(404, detail={"code": "match_not_found", "message": "Match not found"})
     match = m_res.data[0]
 
-    a_id, b_id = match["profile_a_id"], match["profile_b_id"]
+    a_id, b_id = match["user_a_id"], match["user_b_id"]
     if profile_id not in (a_id, b_id):
         raise HTTPException(403, detail={"code": "not_participant", "message": "Not in this match"})
 
@@ -109,7 +116,14 @@ async def get_starter(match_id: UUID, profile_id: str, db: Client, redis: aiored
         tags = result.get("tags", [])
         if not starter or _blocklist_check(starter):
             raise ValueError("blocklist")
-    except Exception:
+    except Exception as exc:
+        import structlog as _sl
+        _sl.get_logger().warning(
+            "starter_gen.fallback",
+            match_id=str(match_id),
+            reason=type(exc).__name__,
+            detail=str(exc),
+        )
         starter = _fallback(intents)
         tags = intents
 

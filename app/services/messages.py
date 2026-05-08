@@ -53,6 +53,7 @@ async def send_message(match_id: UUID, sender_id: str, body: MessageIn, db: Clie
 
 
 async def edit_message(message_id: UUID, editor_id: str, body: MessageEdit, db: Client) -> MessageOut:
+    # Load first to check ownership and window
     result = db.table("messages").select("*").eq("id", str(message_id)).execute()
     if not result.data:
         raise HTTPException(404, detail={"code": "message_not_found", "message": "Message not found"})
@@ -60,18 +61,22 @@ async def edit_message(message_id: UUID, editor_id: str, body: MessageEdit, db: 
     if msg["sender_id"] != editor_id:
         raise HTTPException(403, detail={"code": "not_sender", "message": "Only sender can edit"})
     created = datetime.fromisoformat(msg["created_at"].replace("Z", "+00:00"))
-    if datetime.now(timezone.utc) - created > _EDIT_WINDOW:
-        raise HTTPException(
-            409,
-            detail={"code": "edit_window_expired", "message": "15-minute edit window has passed"},
-        )
+    cutoff = (created + _EDIT_WINDOW).isoformat()
     now_iso = datetime.now(timezone.utc).isoformat()
+    # Atomic UPDATE with window check in WHERE — avoids TOCTOU race
     result2 = (
         db.table("messages")
         .update({"content": body.content, "edited_at": now_iso})
         .eq("id", str(message_id))
+        .eq("sender_id", editor_id)
+        .lte("created_at", cutoff)
         .execute()
     )
+    if not result2.data:
+        raise HTTPException(
+            409,
+            detail={"code": "edit_window_expired", "message": "15-minute edit window has passed"},
+        )
     return MessageOut(**result2.data[0])
 
 

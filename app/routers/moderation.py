@@ -1,6 +1,8 @@
 """
 /api/v1/moderation — reports and blocks.
 """
+from uuid import UUID
+
 from fastapi import APIRouter
 
 from app.deps import UserDB, UserID
@@ -27,6 +29,6 @@ async def list_blocks(uid: UserID, db: UserDB) -> list[BlockOut]:
 
 
 @router.delete("/blocks/{blocked_profile_id}", response_model=OkResponse)
-async def unblock_user(blocked_profile_id: str, uid: UserID, db: UserDB) -> OkResponse:
+async def unblock_user(blocked_profile_id: UUID, uid: UserID, db: UserDB) -> OkResponse:
     await mod_svc.unblock_user(uid, blocked_profile_id, db)
     return OkResponse()

@@ -5,9 +5,10 @@ from uuid import UUID
 
 from fastapi import APIRouter
 
-from app.deps import UserDB, UserID
+from app.deps import Redis, UserDB, UserID
 from app.models.bookings import BookingIn, BookingOut, BookingStatusUpdate
 from app.services import bookings as booking_svc
+from app.services.rate_limit import check_rate_limit
 
 router = APIRouter(tags=["bookings"])
 
@@ -18,7 +19,9 @@ async def list_bookings(uid: UserID, db: UserDB) -> list[BookingOut]:
 
 
 @router.post("/bookings", response_model=BookingOut, status_code=201)
-async def create_booking(uid: UserID, db: UserDB, body: BookingIn) -> BookingOut:
+async def create_booking(uid: UserID, db: UserDB, redis: Redis, body: BookingIn) -> BookingOut:
+    if redis is not None:
+        await check_rate_limit(redis, f"booking:{uid}", limit=20, window=86400)
     return await booking_svc.create_booking(uid, body, db)
 
 

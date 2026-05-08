@@ -7,6 +7,14 @@ Embedding service.
 import hashlib
 
 from openai import AsyncOpenAI
+
+_MAX_PROMPT_INPUT = 500  # chars for user-supplied text in prompts
+
+
+def _sanitize(text: str) -> str:
+    """Strip non-printable chars and truncate to prevent prompt injection."""
+    cleaned = "".join(c for c in text if c.isprintable() or c in "\n\r\t")
+    return cleaned[:_MAX_PROMPT_INPUT]
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import settings
@@ -100,7 +108,7 @@ async def rewrite_bio(body: BioRewriteRequest) -> BioRewriteResponse:
         "You are a profile editor. Rewrite the bio in a "
         f"{tone} tone. Return JSON: {{\"rewritten_bio\": \"...\"}}"
     )
-    result = await _chat_json(system, body.current_bio)
+    result = await _chat_json(system, _sanitize(body.current_bio))
     return BioRewriteResponse(rewritten_bio=result.get("rewritten_bio", body.current_bio))
 
 
@@ -109,5 +117,5 @@ async def suggest_interests(body: InterestSuggestRequest) -> InterestSuggestResp
         "Extract 5-10 professional interests from the bio. "
         "Return JSON: {\"suggested_interests\": [\"...\"]}"
     )
-    result = await _chat_json(system, body.bio)
+    result = await _chat_json(system, _sanitize(body.bio))
     return InterestSuggestResponse(suggested_interests=result.get("suggested_interests", []))
